@@ -1,32 +1,51 @@
 from typing import Optional
 from datetime import datetime
+import logging
 from urllib.parse import quote
-from fastapi import APIRouter, Depends, Request, Form, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends, Request, Form, HTTPException, UploadFile, File, status, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session, joinedload
 from pathlib import Path
 
 from app.database import get_db
 from app.config import APP_NAME, APP_VERSION, COMPANY_NAME, COMPANY_CNPJ, COMPANY_ADDRESS, AUTH_COOKIE_NAME
 from app.models.enums import AssetStatus, AssetCondition, AssetCategory, MovementType, MaintenanceType, MaintenanceStatus
+from app.models.location import Location
+from app.models.asset import Asset
 from app.schemas.asset import AssetCreate, AssetUpdate
 from app.schemas.movement import MovementCreate, MovementFilter
-from app.schemas.custodian import CustodianCreate
+from app.schemas.custodian import CustodianCreate, CustodianUpdate
 from app.schemas.location import LocationCreate
 from app.schemas.maintenance import MaintenanceCreate, MaintenanceUpdate
 from app.services.asset_service import AssetService
 from app.services.movement_service import MovementService
 from app.services.import_service import parse_csv, preview_import, execute_import
 from app.services.custodian_import_service import parse_custodian_csv, preview_custodian_import, execute_custodian_import
+from app.services.location_import_service import parse_locations_csv, preview_locations_import, execute_locations_import
 from app.services.custodian_service import CustodianService
 from app.services.location_service import LocationService
 from app.services.maintenance_service import MaintenanceService
 from app.services.dashboard_service import DashboardService
 from app.services.report_service import ReportService
 from app.api.deps import _client_ip, get_current_user, require_permission
-from app.services.auth_provider import get_auth_provider
-from app.services.auth_service import AccountLockedError
+from app.config import AUTH_ADMIN_PASSWORD
+from app.models.user import User
+from app.models.user_role import UserRole
+from app.models.setup_claim import SetupClaim
+from app.services.auth_provider import resolve_authentication
+from app.services.auth_service import AccountLockedError, create_user
+from app.services.permission_service import (
+    ensure_default_roles,
+    get_role_by_name,
+    assign_role,
+)
+from app.services.ad_service import (
+    ADAuthenticationError,
+    ADNoProfileError,
+    ADUnavailableError,
+)
 from app.services.permission_service import get_user_permission_names, get_user_role_names
 from app.services.audit_service import (
     ACTION_CREATE,
@@ -41,6 +60,7 @@ from app.services.audit_service import (
     RESULT_SUCCESS,
     RESULT_FAILURE,
     RESULT_LOCKED,
+    action_label,
     write_audit,
     write_change_audit,
 )
@@ -91,11 +111,14 @@ templates = Jinja2Templates(
     context_processors=[_inject_current_user],
 )
 
+logger = logging.getLogger("sispatrimonio.web")
+
 # Injeta variáveis globais nos templates
 templates.env.globals["app_name"] = APP_NAME
 templates.env.globals["app_version"] = APP_VERSION
 templates.env.globals["company_name"] = COMPANY_NAME
 templates.env.globals["current_year"] = datetime.now().year
+templates.env.globals["action_label"] = action_label
 
 web_router = APIRouter(include_in_schema=False)
 
@@ -132,8 +155,15 @@ def login_submit(
 ):
     """Processa o login via formulário e estabelece a sessão."""
     ip = _client_ip(request)
+    ad_error_message = None
     try:
-        user = get_auth_provider().authenticate(db, username, password)
+        user = resolve_authentication(db, username, password)
+    except (ADUnavailableError, ADAuthenticationError, ADNoProfileError) as ad_exc:
+        # Erros específicos da integração AD: mensagem clara e genérica ao
+        # usuário; detalhes técnicos ficam apenas no log do servidor.
+        user = None
+        ad_error_message = str(ad_exc)
+        logger.warning("Falha de login AD para '%s': %s", username, type(ad_exc).__name__)
     except AccountLockedError:
         write_audit(
             db,
@@ -157,6 +187,15 @@ def login_submit(
         )
 
     if not user:
+        if ad_error_message:
+            # Falha específica do AD (indisponibilidade, credencial ou perfil):
+            # mensagem já amigável; a auditoria específica foi registrada no
+            # serviço da integração. Não duplica LOGIN_FALHA local.
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context={"next": next, "error": ad_error_message},
+            )
         write_audit(
             db,
             user=None,
@@ -256,19 +295,42 @@ def list_assets(
     search: Optional[str] = None,
     status_filter: Optional[str] = None,
     category_filter: Optional[str] = None,
-    location_id: Optional[int] = None,
-    custodian_id: Optional[int] = None,
+    location_id: Optional[str] = Query(None),
+    custodian_id: Optional[str] = Query(None),
+    brand_filter: Optional[str] = Query(None),
+    model_filter: Optional[str] = Query(None),
+    department_filter: Optional[str] = Query(None),
+    maintenance_filter: Optional[str] = Query(None),
+    purchase_date_from: Optional[str] = Query(None),
+    purchase_date_to: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
+    # Converter parâmetros de string para int (ou None se vazio/inválido)
+    loc_id = int(location_id) if location_id and location_id.strip().isdigit() else None
+    cust_id = int(custodian_id) if custodian_id and custodian_id.strip().isdigit() else None
+    
     status_enum = AssetStatus(status_filter) if status_filter and status_filter in [e.value for e in AssetStatus] else None
     cat_enum = AssetCategory(category_filter) if category_filter and category_filter in [e.value for e in AssetCategory] else None
-
+    
+    # Converter datas
+    from datetime import datetime as dt
+    date_from = dt.strptime(purchase_date_from, "%Y-%m-%d") if purchase_date_from else None
+    date_to = dt.strptime(purchase_date_to, "%Y-%m-%d") if purchase_date_to else None
+    
     assets, total = AssetService.get_all(
         db, search=search, status=status_enum, category=cat_enum,
-        location_id=location_id, custodian_id=custodian_id, limit=200
+        location_id=loc_id, custodian_id=cust_id,
+        brand=brand_filter, model=model_filter,
+        department=department_filter, maintenance_status=maintenance_filter,
+        purchase_date_from=date_from, purchase_date_to=date_to,
+        limit=200
     )
     locations = LocationService.get_all(db)
     custodians = CustodianService.get_all(db, active_only=True)
+    
+    # Obter lista única de departamentos para o filtro
+    departments = db.query(Location.department).distinct().filter(Location.department != None).all()
+    departments = [d[0] for d in departments if d[0]]
 
     return templates.TemplateResponse(
         request=request,
@@ -279,13 +341,115 @@ def list_assets(
             "search": search or "",
             "selected_status": status_filter or "",
             "selected_category": category_filter or "",
-            "selected_location": location_id or "",
-            "selected_custodian": custodian_id or "",
+            "selected_location": loc_id or "",
+            "selected_custodian": cust_id or "",
+            "selected_brand": brand_filter or "",
+            "selected_model": model_filter or "",
+            "selected_department": department_filter or "",
+            "selected_maintenance": maintenance_filter or "",
+            "selected_date_from": purchase_date_from or "",
+            "selected_date_to": purchase_date_to or "",
             "locations": locations,
             "custodians": custodians,
+            "departments": departments,
             "categories": AssetCategory,
             "statuses": AssetStatus,
             "active_tab": "assets"
+        }
+    )
+
+
+@web_router.get("/assets/labels", response_class=HTMLResponse, dependencies=[Depends(require_permission("patrimonio.visualizar"))])
+def assets_labels(
+    request: Request,
+    search: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    category_filter: Optional[str] = None,
+    location_id: Optional[str] = Query(None),
+    custodian_id: Optional[str] = Query(None),
+    brand_filter: Optional[str] = Query(None),
+    model_filter: Optional[str] = Query(None),
+    department_filter: Optional[str] = Query(None),
+    selected: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Página de seleção e impressão de etiquetas patrimoniais em lote.
+
+    Somente leitura: não altera registros patrimoniais. O QR Code reutiliza a
+    mesma biblioteca e o mesmo conteúdo da ficha do bem (/assets/{id}).
+    """
+    loc_id = int(location_id) if location_id and location_id.strip().isdigit() else None
+    cust_id = int(custodian_id) if custodian_id and custodian_id.strip().isdigit() else None
+    status_enum = AssetStatus(status_filter) if status_filter and status_filter in [e.value for e in AssetStatus] else None
+    cat_enum = AssetCategory(category_filter) if category_filter and category_filter in [e.value for e in AssetCategory] else None
+
+    assets, total = AssetService.get_all(
+        db, search=search, status=status_enum, category=cat_enum,
+        location_id=loc_id, custodian_id=cust_id,
+        brand=brand_filter, model=model_filter,
+        department=department_filter,
+        limit=200
+    )
+    locations = LocationService.get_all(db)
+    custodians = CustodianService.get_all(db, active_only=True)
+
+    departments = db.query(Location.department).distinct().filter(Location.department != None).all()
+    departments = [d[0] for d in departments if d[0]]
+
+    # Seleção em lote (somente leitura — ids validados e ordenados como escolhidos)
+    selected_ids: list = []
+    if selected:
+        for part in selected.split(","):
+            part = part.strip()
+            if part.isdigit():
+                val = int(part)
+                if val not in selected_ids:
+                    selected_ids.append(val)
+    selected_assets: list = []
+    if selected_ids:
+        selected_assets = db.query(Asset).options(joinedload(Asset.location)).filter(Asset.id.in_(selected_ids)).all()
+        selected_assets.sort(key=lambda a: selected_ids.index(a.id))
+
+    # Dados para atualização ao vivo da folha de etiquetas (sem recarregar a página)
+    payload_assets = {a.id: a for a in assets}
+    for a in selected_assets:
+        payload_assets.setdefault(a.id, a)
+    selected_payload = {
+        str(a.id): {
+            "id": a.id,
+            "tag": a.tag,
+            "name": a.name,
+            "department": a.location.department if a.location else None,
+            "location_name": a.location.name if a.location else None,
+        }
+        for a in payload_assets.values()
+    }
+
+    return templates.TemplateResponse(
+        request=request,
+        name="assets/labels.html",
+        context={
+            "assets": assets,
+            "total": total,
+            "search": search or "",
+            "selected_status": status_filter or "",
+            "selected_category": category_filter or "",
+            "selected_location": loc_id or "",
+            "selected_custodian": cust_id or "",
+            "selected_brand": brand_filter or "",
+            "selected_model": model_filter or "",
+            "selected_department": department_filter or "",
+            "locations": locations,
+            "custodians": custodians,
+            "departments": departments,
+            "categories": AssetCategory,
+            "statuses": AssetStatus,
+            "selected": selected or "",
+            "selected_list": [str(v) for v in selected_ids],
+            "selected_assets": selected_assets,
+            "selected_payload": selected_payload,
+            "page_ids": [a.id for a in assets],
+            "active_tab": "labels"
         }
     )
 
@@ -637,7 +801,7 @@ def create_movement_form(
             "motivo": movement.reason,
             "termo": movement.term_code,
         },
-        description=f"Movimentação {movement.movement_type.value} do bem {asset_tag or movement.asset_id}",
+        description=f"Movimentação {movement.movement_type.label} do bem {asset_tag or movement.asset_id}",
     )
 
     # Se for alocação ou devolução, redireciona para o termo gerado
@@ -738,6 +902,80 @@ def create_custodian_form(
         description=f"Cadastro do colaborador {custodian.name} ({custodian.registration_code})",
     )
     return RedirectResponse(url="/custodians", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@web_router.get("/custodians/{custodian_id}/edit", response_class=HTMLResponse, dependencies=[Depends(require_permission("colaboradores.editar"))])
+def form_edit_custodian(request: Request, custodian_id: int, error: Optional[str] = None, success: Optional[str] = None, db: Session = Depends(get_db)):
+    """Exibe o formulário de edição de um colaborador existente.
+
+    A matrícula (registration_code) é o identificador do colaborador e é
+    exibida somente para leitura: ela não pode ser alterada pela interface
+    de edição, preservando o vínculo dos bens custodiados.
+    """
+    custodian = CustodianService.get_by_id(db, custodian_id)
+    if not custodian:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado")
+    return templates.TemplateResponse(
+        request=request,
+        name="custodians/form.html",
+        context={
+            "custodian": custodian,
+            "error": error or "",
+            "success": success or "",
+            "active_tab": "custodians"
+        }
+    )
+
+
+@web_router.post("/custodians/{custodian_id}/edit", dependencies=[Depends(require_permission("colaboradores.editar"))])
+def update_custodian_form(
+    request: Request,
+    custodian_id: int,
+    name: str = Form(...),
+    email: str = Form(...),
+    cpf: Optional[str] = Form(None),
+    role: str = Form(...),
+    department: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """Salva a edição de um colaborador existente.
+
+    Recebe apenas os campos editáveis (nome, e-mail, CPF, cargo e
+    departamento). O identificador (id/matrícula) NÃO é aceito do formulário,
+    portanto nunca pode ser alterado pela interface. A atualização é feita
+    in-place pelo ID, preservando os relacionamentos de custódia dos bens.
+    """
+    before_c = CustodianService.get_by_id(db, custodian_id)
+    if not before_c:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado")
+    before = _custodian_audit_snapshot(before_c)
+    update_data = CustodianUpdate(
+        name=name,
+        email=email,
+        cpf=cpf or None,
+        role=role,
+        department=department,
+    )
+    try:
+        custodian = CustodianService.update(db, custodian_id, update_data)
+    except ValueError as err:
+        return RedirectResponse(url=f"/custodians/{custodian_id}/edit?error={quote(str(err))}", status_code=status.HTTP_303_SEE_OTHER)
+    if not custodian:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado")
+    write_change_audit(
+        db,
+        user=request.state.user,
+        action=ACTION_UPDATE,
+        module="Colaboradores",
+        resource="Custodian",
+        resource_ref=custodian.registration_code,
+        resource_id=custodian.id,
+        ip_address=_client_ip(request),
+        before=before,
+        after=_custodian_audit_snapshot(custodian),
+        description=f"Edição do colaborador {custodian.name} ({custodian.registration_code})",
+    )
+    return RedirectResponse(url=f"/custodians/{custodian_id}/edit?success={quote('Colaborador atualizado com sucesso.')}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @web_router.get("/custodians/import", response_class=HTMLResponse, dependencies=[Depends(require_permission("colaboradores.criar"))])
@@ -908,6 +1146,138 @@ def list_locations_view(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@web_router.get("/locations/import", response_class=HTMLResponse, dependencies=[Depends(require_permission("locais.criar"))])
+def form_import_locations(request: Request):
+    """Exibe o formulário de importação CSV de locais"""
+    return templates.TemplateResponse(
+        request=request,
+        name="locations/import.html",
+        context={"active_tab": "locations"},
+    )
+
+
+@web_router.post("/locations/import", response_class=HTMLResponse, dependencies=[Depends(require_permission("locais.criar"))])
+def process_import_locations(
+    request: Request,
+    file: UploadFile = File(...),
+    skip_duplicates: bool = Form(False),
+    db: Session = Depends(get_db)
+):
+    """Processa o upload e exibe pré-visualização da importação"""
+    if not file.filename or not file.filename.endswith(".csv"):
+        return templates.TemplateResponse(
+            request=request,
+            name="locations/import.html",
+            context={
+                "active_tab": "locations",
+                "error": "Arquivo inválido. Envie um arquivo .csv",
+            }
+        )
+
+    content = file.file.read().decode("utf-8-sig")
+    rows, parse_errors = parse_locations_csv(content)
+
+    if not rows and parse_errors:
+        return templates.TemplateResponse(
+            request=request,
+            name="locations/import.html",
+            context={
+                "active_tab": "locations",
+                "error": "Erros ao ler o arquivo CSV:",
+                "parse_errors": parse_errors,
+            }
+        )
+
+    preview = preview_locations_import(rows, db)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="locations/import.html",
+        context={
+            "active_tab": "locations",
+            "show_preview": True,
+            "preview": preview,
+            "csv_rows": rows,
+            "parse_errors": parse_errors,
+            "skip_duplicates": skip_duplicates,
+            "filename": file.filename,
+        }
+    )
+
+
+@web_router.post("/locations/import/confirm", dependencies=[Depends(require_permission("locais.criar"))])
+def confirm_import_locations(
+    request: Request,
+    csv_data: str = Form(...),
+    skip_duplicates: bool = Form(True),
+    db: Session = Depends(get_db)
+):
+    """Confirma e executa a importação de locais"""
+    import json
+    import html as html_mod
+    try:
+        decoded = html_mod.unescape(csv_data)
+        rows = json.loads(decoded)
+        if not isinstance(rows, list):
+            raise ValueError("Dados inválidos: esperado uma lista de registros")
+    except (json.JSONDecodeError, ValueError) as e:
+        return templates.TemplateResponse(
+            request=request,
+            name="locations/import.html",
+            context={
+                "active_tab": "locations",
+                "show_result": True,
+                "result": {
+                    "imported": 0,
+                    "skipped": 0,
+                    "errors": [f"Erro ao processar dados: {str(e)}"],
+                    "total_processed": 0,
+                },
+            }
+        )
+
+    try:
+        result = execute_locations_import(rows, db, skip_duplicates=skip_duplicates)
+    except Exception as e:
+        return templates.TemplateResponse(
+            request=request,
+            name="locations/import.html",
+            context={
+                "active_tab": "locations",
+                "show_result": True,
+                "result": {
+                    "imported": 0,
+                    "skipped": 0,
+                    "errors": [f"Erro na importação: {str(e)}"],
+                    "total_processed": 0,
+                },
+            }
+        )
+
+    write_audit(
+        db,
+        user=request.state.user,
+        action=ACTION_IMPORT,
+        module="Locais",
+        resource="Location",
+        resource_ref="importacao-csv",
+        ip_address=_client_ip(request),
+        description=f"Importação CSV de locais: {result.get('imported', 0)} criados, "
+                    f"{result.get('skipped', 0)} ignorados, {len(result.get('errors', []))} erros",
+        new_data={"imported": result.get("imported", 0), "skipped": result.get("skipped", 0)},
+    )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="locations/import.html",
+        context={
+            "active_tab": "locations",
+            "show_result": True,
+            "result": result,
+        }
+    )
+
+
 @web_router.get("/locations/new", response_class=HTMLResponse, dependencies=[Depends(require_permission("locais.criar"))])
 def form_new_location(request: Request, error: Optional[str] = None):
     return templates.TemplateResponse(
@@ -1025,7 +1395,7 @@ def create_maintenance_form(
             "descricao": maint.description,
             "custo": maint.cost,
         },
-        description=f"Abertura de ordem de serviço {maint.maintenance_type.value} para o bem {asset_tag or asset_id}",
+        description=f"Abertura de ordem de serviço {maint.maintenance_type.label} para o bem {asset_tag or asset_id}",
     )
     return RedirectResponse(url=f"/assets/{asset_id}?maintenance_started=true", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -1067,8 +1437,41 @@ def complete_maintenance_form(
 # RELATÓRIOS
 # ==========================================
 @web_router.get("/reports/inventory", response_class=HTMLResponse, dependencies=[Depends(require_permission("relatorios.visualizar"))])
-def view_inventory_report(request: Request, db: Session = Depends(get_db)):
-    assets, total = AssetService.get_all(db, limit=1000)
+def view_inventory_report(
+    request: Request,
+    search: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    location_id: Optional[str] = Query(None),
+    custodian_id: Optional[str] = Query(None),
+    brand: Optional[str] = Query(None),
+    model: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    maintenance_status: Optional[str] = Query(None),
+    purchase_date_from: Optional[str] = Query(None),
+    purchase_date_to: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    # Converter parâmetros (location_id e custodian_id já são string, não precisam converter)
+    loc_id = int(location_id) if location_id and location_id.strip().isdigit() else None
+    cust_id = int(custodian_id) if custodian_id and custodian_id.strip().isdigit() else None
+    
+    from app.models.enums import AssetStatus as AS, AssetCategory as AC
+    status_enum = AS(status) if status and status in [e.value for e in AS] else None
+    category_enum = AC(category) if category and category in [e.value for e in AC] else None
+    
+    # Converter datas
+    date_from = datetime.strptime(purchase_date_from, "%Y-%m-%d") if purchase_date_from else None
+    date_to = datetime.strptime(purchase_date_to, "%Y-%m-%d") if purchase_date_to else None
+    
+    assets, total = AssetService.get_all(
+        db, search=search, status=status_enum, category=category_enum,
+        location_id=loc_id, custodian_id=cust_id,
+        brand=brand, model=model, department=department,
+        maintenance_status=maintenance_status,
+        purchase_date_from=date_from, purchase_date_to=date_to,
+        limit=1000
+    )
     for a in assets:
         a.deprec_info = AssetService.calculate_depreciation(a)
 
@@ -1078,7 +1481,18 @@ def view_inventory_report(request: Request, db: Session = Depends(get_db)):
         context={
             "assets": assets,
             "total": total,
-            "active_tab": "reports"
+            "active_tab": "reports",
+            "search": search or "",
+            "selected_status": status or "",
+            "selected_category": category or "",
+            "selected_location": loc_id or "",
+            "selected_custodian": cust_id or "",
+            "selected_brand": brand or "",
+            "selected_model": model or "",
+            "selected_department": department or "",
+            "selected_maintenance": maintenance_status or "",
+            "selected_date_from": purchase_date_from or "",
+            "selected_date_to": purchase_date_to or ""
         }
     )
 
@@ -1112,3 +1526,193 @@ def view_custodians_report(request: Request, db: Session = Depends(get_db)):
             "active_tab": "reports"
         }
     )
+
+
+# ============================================================================
+# PRIMEIRO ACESSO / CONFIGURAÇÃO INICIAL (somente instalação nova)
+# ============================================================================
+
+# Identificador do singleton de reivindicação do primeiro acesso.
+SETUP_CLAIM_ID = 1
+
+
+def _first_access_enabled(db: Session) -> bool:
+    """
+    O fluxo de primeiro acesso só é ativado quando:
+    - AUTH_ADMIN_PASSWORD não está configurada (o bootstrap por variável de
+      ambiente não será preparado), E
+    - ainda não existe nenhum usuário no banco.
+
+    Esta é apenas a verificação de exibição/prescrição: ela não é suficiente
+    sozinha para autorizar a criação do administrador, pois duas requisições
+    concorrentes poderiam vê-la verdadeira ao mesmo tempo. A exclusividade é
+    garantida por `_claim_first_access`, que reivindica o bootstrap com uma
+    escrita atômica antes de criar o usuário.
+    """
+    if AUTH_ADMIN_PASSWORD:
+        return False
+    return db.query(User).first() is None
+
+
+def _claim_first_access(db: Session) -> bool:
+    """
+    Reivindica atomicamente o primeiro acesso.
+
+    Insere o registro singleton (`setup_claims.id = 1`): a chave primária é a
+    garantia de exclusividade, pois apenas uma requisição consegue inserir a
+    linha. Quem chega primeiro segue para a criação do administrador no mesmo
+    commit; as concorrentes caem em violação de unicidade (`IntegrityError`) ou
+    em bloqueio de escrita do SQLite (`OperationalError`) e recebem False.
+
+    A reivindicação não é confirmada enquanto `db.commit()` não acontece: se a
+    criação do administrador falhar, o `db.rollback()` libera o registro e o
+    primeiro acesso volta a ficar disponível.
+    """
+    db.add(SetupClaim(id=SETUP_CLAIM_ID))
+    try:
+        db.flush()
+    except (IntegrityError, OperationalError):
+        db.rollback()
+        return False
+    return True
+
+
+@web_router.get("/setup", response_class=HTMLResponse)
+def first_access_page(
+    request: Request, db: Session = Depends(get_db)
+):
+    """Tela de configuração inicial. Só visível em instalação nova."""
+    if not _first_access_enabled(db):
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse(
+        request=request,
+        name="setup.html",
+        context={"error": ""},
+    )
+
+
+@web_router.post("/setup", response_class=HTMLResponse)
+def first_access_submit(
+    request: Request,
+    full_name: str = Form(""),
+    username: str = Form(""),
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+    email: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Processa a criação do primeiro administrador."""
+    ip = _client_ip(request)
+
+    # Pré-checagem (barata): instalação nova e sem bootstrap por variável de
+    # ambiente. NÃO é a garantia de exclusividade — ver _claim_first_access.
+    if not _first_access_enabled(db):
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+
+    username = (username or "").strip()
+    full_name = (full_name or "").strip()
+    email = (email or "").strip()
+
+    if not username:
+        return templates.TemplateResponse(
+            request=request,
+            name="setup.html",
+            context={"error": "O nome de usuário não pode ser vazio."},
+        )
+    if not password or len(password) < 8:
+        return templates.TemplateResponse(
+            request=request,
+            name="setup.html",
+            context={"error": "A senha deve ter no mínimo 8 caracteres."},
+        )
+    if password != confirm_password:
+        return templates.TemplateResponse(
+            request=request,
+            name="setup.html",
+            context={"error": "As senhas não coincidem."},
+        )
+
+    # Reivindica o bootstrap de forma atômica ANTES de criar o usuário. A
+    # partir daqui, a reivindicação só é confirmada junto com a criação do
+    # administrador (mesmo commit); qualquer falha faz rollback e libera o
+    # primeiro acesso.
+    if not _claim_first_access(db):
+        logger.warning(
+            "Primeiro acesso já reivindicado/em andamento; requisição concorrente "
+            "redirecionada ao login (ip=%s)",
+            ip,
+        )
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+
+    # Defesa em profundidade: se algum usuário já existir (ex.: banco legado
+    # com reivindicação inexistente), descarta a reivindicação na mesma
+    # transação e volta para o login.
+    if db.query(User).first() is not None:
+        db.rollback()
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+
+    try:
+        admin = create_user(
+            db,
+            username=username,
+            password=password,
+            full_name=full_name or None,
+            email=email or None,
+            is_admin=True,
+        )
+    except ValueError as err:
+        # Libera a reivindicação para que o primeiro acesso possa ser refeito.
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="setup.html",
+            context={"error": str(err)},
+        )
+    except IntegrityError:
+        # Outra requisição criou o primeiro usuário neste intervalo.
+        db.rollback()
+        logger.warning("Primeiro acesso concluído por outra requisição concorrente")
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+
+    # Garante catálogo de permissões e o perfil Administrador (idempotente)
+    ensure_default_roles(db)
+
+    # Vincula o perfil Administrador ao novo usuário, se ainda não estiver
+    # vinculado (garante que o administrador tem as permissões esperadas).
+    admin_role = get_role_by_name(db, "Administrador")
+    if admin_role:
+        role_assigned = (
+            db.query(UserRole)
+            .filter(UserRole.user_id == admin.id, UserRole.role_id == admin_role.id)
+            .first()
+        )
+        if not role_assigned:
+            assign_role(db, admin, admin_role)
+
+    # Auditoria de criação — NUNCA registra senha, hash ou credencial.
+    write_audit(
+        db,
+        user=admin,
+        action=ACTION_CREATE,
+        module="Usuários",
+        resource="User",
+        resource_ref=admin.username,
+        resource_id=admin.id,
+        ip_address=ip,
+        result=RESULT_SUCCESS,
+        description="Primeiro administrador criado no primeiro acesso",
+        new_data={
+            "username": admin.username,
+            "full_name": admin.full_name,
+            "email": admin.email,
+            "is_admin": True,
+        },
+    )
+
+    logger.info(
+        "Primeiro administrador criado via setup: username=%s, ip=%s",
+        admin.username,
+        ip,
+    )
+
+    return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Equipamentos | SisPatrimônio Pro{% endblock %}
+{% block title %}Equipamentos{% endblock %}
 
 {% block content %}
 <!-- Page Header -->
@@ -11,13 +11,26 @@
     </div>
     <div class="d-flex gap-2">
         {% if can('relatorios.exportar') %}
-        <a href="/reports/inventory" class="btn btn-ghost">
-            <i class="bi bi-download"></i> Exportar
-        </a>
+        <div class="dropdown">
+            <button class="btn btn-ghost" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                <i class="bi bi-upload me-1"></i> Exportar <i class="bi bi-chevron-down ms-1"></i>
+            </button>
+            <ul class="dropdown-menu">
+                <li><a class="dropdown-item" href="/api/v1/reports/inventory/csv?search={{ search }}&status={{ selected_status }}&category={{ selected_category }}&location_id={{ selected_location }}&custodian_id={{ selected_custodian }}&brand={{ selected_brand }}&model={{ selected_model }}&department={{ selected_department }}&maintenance_status={{ selected_maintenance }}&purchase_date_from={{ selected_date_from }}&purchase_date_to={{ selected_date_to }}">
+                    <i class="bi bi-file-earmark-spreadsheet me-1"></i> CSV
+                </a></li>
+                <li><a class="dropdown-item" href="/api/v1/reports/inventory/excel?search={{ search }}&status={{ selected_status }}&category={{ selected_category }}&location_id={{ selected_location }}&custodian_id={{ selected_custodian }}&brand={{ selected_brand }}&model={{ selected_model }}&department={{ selected_department }}&maintenance_status={{ selected_maintenance }}&purchase_date_from={{ selected_date_from }}&purchase_date_to={{ selected_date_to }}">
+                    <i class="bi bi-file-earmark-excel me-1"></i> Excel (.xlsx)
+                </a></li>
+                <li><a class="dropdown-item" href="/api/v1/reports/inventory/pdf?search={{ search }}&status={{ selected_status }}&category={{ selected_category }}&location_id={{ selected_location }}&custodian_id={{ selected_custodian }}&brand={{ selected_brand }}&model={{ selected_model }}&department={{ selected_department }}&maintenance_status={{ selected_maintenance }}&purchase_date_from={{ selected_date_from }}&purchase_date_to={{ selected_date_to }}">
+                    <i class="bi bi-file-earmark-pdf me-1"></i> PDF
+                </a></li>
+            </ul>
+        </div>
         {% endif %}
         {% if can('patrimonio.criar') %}
         <a href="/assets/import" class="btn btn-ghost">
-            <i class="bi bi-filetype-csv"></i> Importar CSV
+            <i class="bi bi-download me-1"></i> Importar CSV
         </a>
         <a href="/assets/new" class="btn btn-primary">
             <i class="bi bi-plus-lg"></i> Novo Equipamento
@@ -28,18 +41,18 @@
 
 <!-- Filters -->
 <div class="card p-3 mb-4">
-    <form method="get" action="/assets" class="row g-2 align-items-center">
+    <form method="get" action="/assets" class="row g-2 align-items-center assets-filters">
         <div class="col-12 col-lg-4">
             <div class="input-group">
                 <span class="input-group-text bg-white border-end-0 text-muted"><i class="bi bi-search"></i></span>
-                <input type="text" name="search" class="form-control border-start-0 ps-0" placeholder="Buscar por tag, nome, modelo, série..." value="{{ search }}">
+                <input type="text" name="search" class="form-control border-start-0 ps-0" placeholder="Buscar por patrimônio, série, marca, modelo, colaborador, setor ou localização..." value="{{ search }}">
             </div>
         </div>
         <div class="col-6 col-md-3 col-lg-2">
             <select name="status_filter" class="form-select">
                 <option value="">Status: Todos</option>
                 {% for s in statuses %}
-                <option value="{{ s.value }}" {% if selected_status == s.value %}selected{% endif %}>{{ s.value }}</option>
+                <option value="{{ s.value }}" {% if selected_status == s.value %}selected{% endif %}>{{ s.label }}</option>
                 {% endfor %}
             </select>
         </div>
@@ -47,9 +60,15 @@
             <select name="category_filter" class="form-select">
                 <option value="">Categoria: Todas</option>
                 {% for c in categories %}
-                <option value="{{ c.value }}" {% if selected_category == c.value %}selected{% endif %}>{{ c.value }}</option>
+                <option value="{{ c.value }}" {% if selected_category == c.value %}selected{% endif %}>{{ c.label }}</option>
                 {% endfor %}
             </select>
+        </div>
+        <div class="col-12 col-md-3 col-lg-2">
+            <input type="text" name="brand_filter" class="form-control" placeholder="Marca" value="{{ selected_brand }}">
+        </div>
+        <div class="col-12 col-md-3 col-lg-2">
+            <input type="text" name="model_filter" class="form-control" placeholder="Modelo" value="{{ selected_model }}">
         </div>
         <div class="col-12 col-md-4 col-lg-2">
             <select name="location_id" class="form-select">
@@ -59,9 +78,44 @@
                 {% endfor %}
             </select>
         </div>
-        <div class="col-12 col-md-2 col-lg-2 d-flex gap-2">
+        <div class="col-12 col-md-3 col-lg-2">
+            <select name="custodian_id" class="form-select">
+                <option value="">Colaborador: Todos</option>
+                {% for c in custodians %}
+                <option value="{{ c.id }}" {% if selected_custodian|string == c.id|string %}selected{% endif %}>{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-12 col-md-3 col-lg-2">
+            <select name="department_filter" class="form-select">
+                <option value="">Setor: Todos</option>
+                {% for dept in departments %}
+                <option value="{{ dept }}" {% if selected_department == dept %}selected{% endif %}>{{ dept }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-12 col-md-3 col-lg-2">
+            <select name="maintenance_filter" class="form-select">
+                <option value="">Manutenção: Todas</option>
+                <option value="open" {% if selected_maintenance == 'open' %}selected{% endif %}>Em Manutenção</option>
+                <option value="closed" {% if selected_maintenance == 'closed' %}selected{% endif %}>Sem Manutenção Aberta</option>
+            </select>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="input-group">
+                <span class="input-group-text bg-white border-end-0 text-muted small">De:</span>
+                <input type="date" name="purchase_date_from" class="form-control" value="{{ selected_date_from }}" >
+            </div>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="input-group">
+                <span class="input-group-text bg-white border-end-0 text-muted small">Até:</span>
+                <input type="date" name="purchase_date_to" class="form-control" value="{{ selected_date_to }}">
+            </div>
+        </div>
+        <div class="col-12 col-md-6 col-lg-4 d-flex gap-2 align-items-end">
             <button type="submit" class="btn btn-primary w-100"><i class="bi bi-funnel"></i> Filtrar</button>
-            {% if search or selected_status or selected_category or selected_location %}
+            {% if search or selected_status or selected_category or selected_location or selected_custodian or selected_department or selected_maintenance or selected_date_from or selected_date_to %}
             <a href="/assets" class="btn btn-ghost" title="Limpar Filtros"><i class="bi bi-x-lg"></i></a>
             {% endif %}
         </div>
@@ -107,10 +161,10 @@
                         </div>
                     </td>
                     <td>
-                        <span class="badge badge-soft-gray font-monospace" style="font-size:.68rem;">{{ a.category.value }}</span>
+                        <span class="badge badge-soft-gray" style="font-size:.68rem;">{{ a.category.label }}</span>
                     </td>
                     <td>
-                        <span class="status-pill status-pill-{{ a.status.value }}">{{ a.status.value }}</span>
+                        <span class="status-pill status-pill-{{ a.status.value }}">{{ a.status.label }}</span>
                     </td>
                     <td class="small">
                         {% if a.custodian %}

@@ -1,20 +1,13 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <title>Termo de Responsabilidade e Cautela - {{ term.term_code }}</title>
-    <!-- Bootstrap 5 CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-    <link rel="stylesheet" href="/static/css/style.css">
-    <!-- QRCode.js -->
-    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-</head>
+{% extends "base.html" %}
+
+{% block title %}Termo de Responsabilidade e Cautela - {{ term.term_code }}{% endblock %}
+
+{% block content %}
 <body class="bg-light">
 
     <!-- Top Action Bar (hidden on print) -->
     <div class="container my-3 no-print">
-        <div class="d-flex justify-content-between align-items-center bg-white p-3 rounded shadow-sm">
+        <div class="d-flex justify-content-between align-items-center p-3 rounded shadow-sm" data-theme-term="1">
             <div>
                 <a href="/movements" class="btn btn-outline-secondary btn-sm">
                     <i class="bi bi-arrow-left me-1"></i> Voltar ao Fluxo
@@ -32,7 +25,7 @@
     </div>
 
     <!-- Official Printable Document Container -->
-    <div class="term-container bg-white">
+    <div class="term-container" data-theme-term="1">
         <!-- Header -->
         <div class="row align-items-center border-bottom pb-3 mb-4">
             <div class="col-8">
@@ -55,7 +48,7 @@
         <!-- Custodian & Location Details -->
         <div class="mb-4">
             <h6 class="fw-bold text-decoration-underline mb-2">1. QUALIFICAÇÃO DO COLABORADOR / CUSTODIANTE</h6>
-            <table class="table table-bordered table-sm small">
+            <table class="table table-bordered table-sm small" data-theme-table="1">
                 <tr>
                     <td class="bg-light fw-semibold" style="width: 25%;">Nome Completo:</td>
                     <td style="width: 45%;">{{ term.custodian.name }}</td>
@@ -80,12 +73,12 @@
         <!-- Asset Details -->
         <div class="mb-4">
             <h6 class="fw-bold text-decoration-underline mb-2">2. ESPECIFICAÇÃO DO EQUIPAMENTO PATRIMONIAL</h6>
-            <table class="table table-bordered table-sm small">
+            <table class="table table-bordered table-sm small" data-theme-table="1">
                 <tr>
                     <td class="bg-light fw-semibold" style="width: 25%;">Número de Tombamento:</td>
                     <td class="font-monospace fw-bold" style="width: 45%;">{{ term.asset.tag }}</td>
                     <td class="bg-light fw-semibold" style="width: 15%;">Categoria:</td>
-                    <td>{{ term.asset.category }}</td>
+                    <td>{{ term.asset.category.label }}</td>
                 </tr>
                 <tr>
                     <td class="bg-light fw-semibold">Descrição do Bem:</td>
@@ -99,7 +92,7 @@
                 </tr>
                 <tr>
                     <td class="bg-light fw-semibold">Estado de Conservação:</td>
-                    <td>{{ term.asset.condition }}</td>
+                    <td>{{ term.asset.condition.label }}</td>
                     <td class="bg-light fw-semibold">Local Alocado:</td>
                     <td>{{ term.location.name }}</td>
                 </tr>
@@ -150,15 +143,16 @@
         </div>
     </div>
 
+    {% block scripts %}
     <script>
         new QRCode(document.getElementById("term-qrcode"), {
             text: window.location.origin + "/movements/{{ movement_id }}/term",
             width: 70,
             height: 70,
-            colorDark : "#1e293b",
+            colorDark : "#2d0a0f",
             colorLight : "#ffffff",
             correctLevel : QRCode.CorrectLevel.M
         });
     </script>
-</body>
-</html>
+    {% endblock %}
+{% endblock %}

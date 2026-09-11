@@ -32,7 +32,7 @@
                     <option value="">-- Selecione o Bem Patrimonial --</option>
                     {% for a in assets %}
                     <option value="{{ a.id }}" {% if selected_asset and selected_asset.id == a.id %}selected{% endif %}>
-                        [{{ a.tag }}] {{ a.name }} — {{ a.status.value }} ({{ a.custodian.name if a.custodian else 'Estoque' }})
+                        [{{ a.tag }}] {{ a.name }} — {{ a.status.label }} ({{ a.custodian.name if a.custodian else 'Estoque' }})
                     </option>
                     {% endfor %}
                 </select>
@@ -45,7 +45,7 @@
                     <label class="d-block p-3 border rounded cursor-pointer" style="cursor:pointer;transition:all .15s;">
                         <input class="form-check-input" type="radio" name="movement_type" id="type_alloc" value="ALOCACAO_CAUTELA" {% if prefill_type == 'ALOCACAO_CAUTELA' or not prefill_type %}checked{% endif %} required>
                         <label class="fw-semibold ms-2" for="type_alloc" style="color:var(--c-text);">
-                            <i class="bi bi-person-check me-1" style="color:var(--blue);"></i> Alocação a Colaborador
+                            <i class="bi bi-person-check me-1" style="color:var(--info);"></i> Alocação a Colaborador
                         </label>
                         <small class="text-muted d-block mt-1 ms-4" style="font-size:.78rem;">Entrega de equipamento a um funcionário.</small>
                     </label>
@@ -105,7 +105,7 @@
                     <select name="new_condition" class="form-select">
                         <option value="">-- Manter Estado Atual --</option>
                         {% for cond in conditions %}
-                        <option value="{{ cond.value }}">{{ cond.value }}</option>
+                        <option value="{{ cond.value }}">{{ cond.label }}</option>
                         {% endfor %}
                     </select>
                 </div>

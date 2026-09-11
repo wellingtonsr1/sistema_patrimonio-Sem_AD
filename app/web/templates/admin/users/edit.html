@@ -2,6 +2,15 @@
 
 {% block title %}Editar {{ user.username }} | SisPatrimônio Pro{% endblock %}
 
+{% block flash_messages %}
+    {% if request.query_params.get('created') == 'true' %}
+    <div class="alert alert-success d-flex align-items-center gap-2 py-2 small mb-3" role="alert">
+        <i class="bi bi-check-circle-fill text-success"></i>
+        <span>Operação realizada com sucesso!</span>
+    </div>
+    {% endif %}
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
     <div>
@@ -11,7 +20,8 @@
         </h3>
         <p class="page-header-subtitle">
             {% if user.full_name %}{{ user.full_name }} • {% endif %}
-            Último acesso: {{ user.last_login.strftime('%d/%m/%Y %H:%M') if user.last_login else 'Nunca' }}
+            Último acesso: {{ user.last_login.strftime('%d/%m/%Y %H:%M') if user.last_login else 'Nunca' }} •
+            Origem: {% if user.auth_provider == 'ad' %}Active Directory{% else %}Local{% endif %}
         </p>
     </div>
     <a href="/admin/users" class="btn btn-ghost">
@@ -80,6 +90,19 @@
     </div>
 
     <div class="col-12 col-lg-5">
+        {% if user.auth_provider == 'ad' %}
+        <!-- Identidade AD (somente leitura) -->
+        <div class="card p-4 mb-4">
+            <div class="section-divider mb-3"><i class="bi bi-hdd-network"></i> Usuário Active Directory</div>
+            <ul class="small text-muted mb-0 ps-3">
+                <li>Identificador AD: <code>{{ user.ad_object_guid or '-' }}</code></li>
+                <li>DN: <span class="text-break">{{ user.ad_dn or '-' }}</span></li>
+                <li>Última sincronização: {{ user.ad_last_sync.strftime('%d/%m/%Y %H:%M') if user.ad_last_sync else 'Nunca' }}</li>
+                <li>Perfis atribuídos via AD são sincronizados a cada login; perfis manuais são preservados.</li>
+            </ul>
+        </div>
+        {% endif %}
+
         <!-- Status & Ações -->
         <div class="card p-4 mb-4">
             <div class="section-divider mb-3"><i class="bi bi-activity"></i> Situação da Conta</div>
@@ -113,13 +136,18 @@
             {% endif %}
         </div>
 
-        {% if can('usuarios.editar') %}
+        {% if can('usuarios.editar') and user.auth_provider != 'ad' %}
         <div class="card p-4">
             <div class="section-divider mb-3"><i class="bi bi-key"></i> Redefinir Senha</div>
-            <form method="post" action="/admin/users/{{ user.id }}/reset-password">
+            <form method="post" action="/admin/users/{{ user.id }}/reset-password" class="reset-password-form">
                 <div class="mb-3">
-                    <label class="form-label fw-semibold">Nova Senha</label>
-                    <input type="password" name="new_password" class="form-control" required autocomplete="new-password" minlength="8">
+                    <label class="form-label fw-semibold" for="new_password">Nova Senha</label>
+                    <div class="input-group">
+                        <input type="password" id="new_password" name="new_password" class="form-control" required autocomplete="new-password" minlength="8">
+                        <button class="btn btn-outline-secondary" type="button" id="toggleNewPassword" onclick="togglePasswordVisibility('new_password', 'toggleNewIcon')">
+                            <i class="bi bi-eye-slash" id="toggleNewIcon"></i>
+                        </button>
+                    </div>
                     <div class="form-text">Mínimo de 8 caracteres. As sessões existentes serão invalidadas.</div>
                 </div>
                 <button type="submit" class="btn btn-warning w-100"

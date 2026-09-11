@@ -1,12 +1,13 @@
 from datetime import datetime
 from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, desc
+from sqlalchemy import or_, desc, and_
 from app.models.asset import Asset
 from app.models.movement import Movement
 from app.models.location import Location
 from app.models.custodian import Custodian
-from app.models.enums import AssetStatus, AssetCondition, MovementType
+from app.models.maintenance import Maintenance
+from app.models.enums import AssetStatus, AssetCondition, MovementType, MaintenanceStatus
 from app.schemas.asset import AssetCreate, AssetUpdate
 
 
@@ -19,24 +20,47 @@ class AssetService:
         category: Optional[str] = None,
         location_id: Optional[int] = None,
         custodian_id: Optional[int] = None,
+        brand: Optional[str] = None,
+        model: Optional[str] = None,
+        department: Optional[str] = None,
+        maintenance_status: Optional[str] = None,
+        purchase_date_from: Optional[datetime] = None,
+        purchase_date_to: Optional[datetime] = None,
         skip: int = 0,
         limit: int = 100
     ) -> Tuple[List[Asset], int]:
         query = db.query(Asset).options(
             joinedload(Asset.location),
-            joinedload(Asset.custodian)
+            joinedload(Asset.custodian),
+            joinedload(Asset.maintenances)
         )
 
         if search:
             search_filter = f"%{search.strip()}%"
             query = query.filter(
                 or_(
+                    # Campos do equipamento
                     Asset.tag.ilike(search_filter),
                     Asset.name.ilike(search_filter),
                     Asset.brand.ilike(search_filter),
                     Asset.model.ilike(search_filter),
                     Asset.serial_number.ilike(search_filter),
-                    Asset.invoice_number.ilike(search_filter)
+                    Asset.invoice_number.ilike(search_filter),
+                    # Colaborador relacionado
+                    Asset.custodian.has(Custodian.name.ilike(search_filter)),
+                    # Localização relacionada (todos os campos)
+                    Asset.location.has(
+                        or_(
+                            Location.name.ilike(search_filter),
+                            Location.branch.ilike(search_filter),
+                            Location.building.ilike(search_filter),
+                            Location.floor.ilike(search_filter),
+                            Location.room.ilike(search_filter),
+                            Location.department.ilike(search_filter),
+                            Location.manager_name.ilike(search_filter),
+                            Location.description.ilike(search_filter)
+                        )
+                    )
                 )
             )
 
@@ -51,6 +75,31 @@ class AssetService:
 
         if custodian_id:
             query = query.filter(Asset.custodian_id == custodian_id)
+
+        # Novos filtros avançados
+        if brand:
+            query = query.filter(Asset.brand.ilike(f"%{brand}%"))
+
+        if model:
+            query = query.filter(Asset.model.ilike(f"%{model}%"))
+
+        if department:
+            query = query.filter(Asset.location.has(Location.department == department))
+
+        if maintenance_status == "open":
+            # Equipamentos com manutenção em andamento
+            query = query.filter(Asset.maintenances.any(Maintenance.status == MaintenanceStatus.IN_PROGRESS))
+        elif maintenance_status == "closed":
+            # Equipamentos sem manutenção aberta (ou com todas finalizadas)
+            query = query.filter(
+                ~Asset.maintenances.any(Maintenance.status == MaintenanceStatus.IN_PROGRESS)
+            )
+
+        if purchase_date_from:
+            query = query.filter(Asset.purchase_date >= purchase_date_from)
+
+        if purchase_date_to:
+            query = query.filter(Asset.purchase_date <= purchase_date_to)
 
         total = query.count()
         assets = query.order_by(desc(Asset.created_at)).offset(skip).limit(limit).all()
@@ -187,7 +236,7 @@ class AssetService:
                 new_condition=data.condition,
                 reason="Vistoria técnica / Atualização de estado de conservação",
                 operator_name="Sistema",
-                notes=f"Estado de conservação alterado de {old_condition.value} para {data.condition.value}."
+                notes=f"Estado de conservação alterado de {old_condition.label} para {data.condition.label}."
             )
             db.add(movement)
 

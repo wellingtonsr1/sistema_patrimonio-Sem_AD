@@ -14,7 +14,8 @@
             } catch (e) {}
         })();
     </script>
-    <title>{% block title %}SisPatrimônio Pro{% endblock %}</title>
+    <title>SisPatrimônio - {% block title %}Início{% endblock %}</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}">
     <!-- Google Fonts: Plus Jakarta Sans -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -24,13 +25,13 @@
     <!-- Bootstrap Icons -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260905">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260913">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- QRCode.js -->
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 </head>
-<body>
+<body style="padding-top: 90px;">
     <!-- ===== Mobile Sidebar ===== -->
     <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
     <aside class="mobile-sidebar" id="mobileSidebar" style="display:none;">
@@ -50,6 +51,9 @@
             {% if can('patrimonio.visualizar') %}
             <a class="sidebar-nav-item {% if active_tab == 'assets' %}active{% endif %}" href="/assets">
                 <i class="bi bi-laptop"></i> Equipamentos
+            </a>
+            <a class="sidebar-nav-item {% if active_tab == 'labels' %}active{% endif %}" href="/assets/labels">
+                <i class="bi bi-upc-scan"></i> Etiquetas
             </a>
             {% endif %}
             {% if can('movimentacao.visualizar') %}
@@ -98,6 +102,11 @@
                 <i class="bi bi-shield-lock"></i> Perfis & Permissões
             </a>
             {% endif %}
+            {% if can('usuarios.editar') and can('perfis.editar') %}
+            <a class="sidebar-nav-item" href="/admin/ad">
+                <i class="bi bi-hdd-network"></i> Integração AD
+            </a>
+            {% endif %}
             {% if can('auditoria.visualizar') %}
             <a class="sidebar-nav-item" href="/admin/audit">
                 <i class="bi bi-journal-check"></i> Auditoria
@@ -113,47 +122,48 @@
             </a>
         </nav>
         <div class="sidebar-actions">
-            {% if can('movimentacao.criar') %}
-            <a href="/movements/new" class="btn btn-ghost btn-sm" style="color:#94a3b8;border-color:rgba(255,255,255,.12);">
-                <i class="bi bi-arrow-repeat"></i> Movimentar
-            </a>
-            {% endif %}
-            {% if can('patrimonio.criar') %}
-            <a href="/assets/new" class="btn btn-primary btn-sm">
-                <i class="bi bi-plus-lg"></i> Novo Bem
-            </a>
-            {% endif %}
-        </div>
-    </aside>
+            {% if can('movimentacao.criar') %}                    <a href="/movements/new" class="btn btn-ghost btn-sm" style="color:var(--color-primary);border-color:var(--color-border);">
+                        <i class="bi bi-arrow-repeat"></i> Movimentar
+                    </a>
+                    {% endif %}
+                    {% if can('patrimonio.criar') %}
+                    <a href="/assets/new" class="btn btn-primary btn-sm">
+                        <i class="bi bi-plus-lg"></i> Novo Bem
+                    </a>
+                    {% endif %}
+                </div>
+            </aside>
 
     <!-- ===== Top Navbar ===== -->
-    <nav class="navbar navbar-expand-xl app-navbar sticky-top no-print">
-        <div class="container-fluid px-lg-4">
+    <nav class="navbar navbar-expand-xl app-navbar fixed-top no-print">
+        <div class="container-fluid px-lg-1">
             <!-- Hamburger (mobile) -->
-            <button class="sidebar-hamburger me-2" onclick="openSidebar()" aria-label="Abrir menu">
+            <button class="sidebar-hamburger me-4" onclick="openSidebar()" aria-label="Abrir menu">
                 <i class="bi bi-list"></i>
             </button>
 
             <a class="navbar-brand d-flex align-items-center gap-2" href="/">
-                <span class="navbar-brand-icon">
-                    <i class="bi bi-box-seam"></i>
-                </span>
-                <span>SisPatrimônio <span class="badge bg-indigo-subtle text-primary border border-primary-subtle fw-normal" style="font-size:.65rem;">PRO</span></span>
+                <img src="/static/img/Logo_IPMjp.png" alt="" class="navbar-brand-logo">
+                <span>SisPatrimônio <span class="badge badge-soft-primary fw-normal" style="font-size:.65rem;">PRO</span></span>
             </a>
 
             <!-- Desktop nav collapse -->
-            <div class="collapse navbar-collapse ms-lg-3" id="navbarMain">
-                <ul class="navbar-nav me-auto mb-2 mb-lg-0 gap-1">
+            <div class="collapse navbar-collapse" id="navbarMain">
+                <ul class="navbar-nav mb-2 mb-lg-0 gap-1">
                     <li class="nav-item">
                         <a class="nav-link {% if active_tab == 'dashboard' %}active{% endif %}" href="/">
                             <i class="bi bi-grid-1x2 me-1"></i> Dashboard
                         </a>
                     </li>
                     {% if can('patrimonio.visualizar') %}
-                    <li class="nav-item">
-                        <a class="nav-link {% if active_tab == 'assets' %}active{% endif %}" href="/assets">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle {% if active_tab == 'assets' or active_tab == 'labels' %}active{% endif %}" href="/assets" role="button" data-bs-toggle="dropdown">
                             <i class="bi bi-laptop me-1"></i> Equipamentos
                         </a>
+                        <ul class="dropdown-menu shadow-sm border-0 mt-2">
+                            <li><a class="dropdown-item py-2 {% if active_tab == 'assets' %}active{% endif %}" href="/assets"><i class="bi bi-laptop me-1" style="color:var(--color-primary);"></i>Equipamentos &amp; Bens</a></li>
+                            <li><a class="dropdown-item py-2 {% if active_tab == 'labels' %}active{% endif %}" href="/assets/labels"><i class="bi bi-upc-scan me-1" style="color:var(--color-primary);"></i>Etiquetas</a></li>
+                        </ul>
                     </li>
                     {% endif %}
                     {% if can('movimentacao.visualizar') %}
@@ -189,12 +199,11 @@
                         <a class="nav-link dropdown-toggle {% if active_tab == 'reports' %}active{% endif %}" href="#" role="button" data-bs-toggle="dropdown">
                             <i class="bi bi-file-earmark-text me-1"></i> Relatórios
                         </a>
-                        <ul class="dropdown-menu shadow-sm border-0 mt-2">
-                            <li><a class="dropdown-item py-2" href="/reports/inventory"><i class="bi bi-table text-primary me-2"></i>Inventário Geral</a></li>
-                            <li><a class="dropdown-item py-2" href="/reports/movements"><i class="bi bi-clock-history me-2" style="color:var(--indigo);"></i>Trilha de Auditoria</a></li>
-                            <li><a class="dropdown-item py-2" href="/reports/custodians"><i class="bi bi-people me-2" style="color:var(--green);"></i>Relação de Colaboradores</a></li>
-                            <li><hr class="dropdown-divider my-1"></li>
-                            <li><a class="dropdown-item py-2" href="/docs" target="_blank"><i class="bi bi-code-slash text-secondary me-2"></i>API Swagger</a></li>
+                        <ul class="dropdown-menu shadow-sm border-0 mt-2">                        <li><a class="dropdown-item py-2" href="/reports/inventory"><i class="bi bi-table me-1" style="color:var(--color-primary);"></i>Inventário Geral</a></li>
+                            <li><a class="dropdown-item py-2" href="/reports/movements"><i class="bi bi-clock-history me-1" style="color:var(--color-primary);"></i>Trilha de Auditoria</a></li>
+                            <li><a class="dropdown-item py-2" href="/reports/custodians"><i class="bi bi-people me-1" style="color:var(--green);"></i>Relação de Colaboradores</a></li>
+                                    <li><hr class="dropdown-divider my-1"></li>
+                                    <li><a class="dropdown-item py-2" href="/docs" target="_blank"><i class="bi bi-code-slash me-1" style="color:var(--color-text-secondary);"></i>API Swagger</a></li>
                         </ul>
                     </li>
                     {% endif %}
@@ -205,41 +214,40 @@
                         </a>
                         <ul class="dropdown-menu shadow-sm border-0 mt-2">
                             {% if can('usuarios.visualizar') %}
-                            <li><a class="dropdown-item py-2" href="/admin/users"><i class="bi bi-person-gear text-primary me-2"></i>Usuários</a></li>
+                            <li><a class="dropdown-item py-2" href="/admin/users"><i class="bi bi-person-gear me-1" style="color:var(--color-primary);"></i>Usuários</a></li>
                             {% endif %}
                             {% if can('perfis.visualizar') %}
-                            <li><a class="dropdown-item py-2" href="/admin/roles"><i class="bi bi-shield-lock me-2" style="color:var(--indigo);"></i>Perfis & Permissões</a></li>
+                            <li><a class="dropdown-item py-2" href="/admin/roles"><i class="bi bi-shield-lock me-1" style="color:var(--color-primary);"></i>Perfis & Permissões</a></li>
+                            {% endif %}
+                            {% if can('usuarios.editar') and can('perfis.editar') %}
+                            <li><a class="dropdown-item py-2" href="/admin/ad"><i class="bi bi-hdd-network me-1" style="color:var(--color-primary);"></i>Integração AD</a></li>
                             {% endif %}
                             {% if can('auditoria.visualizar') %}
-                            <li><a class="dropdown-item py-2" href="/admin/audit"><i class="bi bi-journal-check me-2" style="color:var(--green);"></i>Auditoria</a></li>
+                            <li><a class="dropdown-item py-2" href="/admin/audit"><i class="bi bi-journal-check me-1" style="color:var(--color-primary);"></i>Auditoria</a></li>
                             {% endif %}
                         </ul>
                     </li>
                     {% endif %}
                 </ul>
 
-                <div class="d-flex align-items-center gap-2 mt-3 mt-lg-0">
+            </div>
+
+            <!-- Right-side actions: Ajuda, usuário e alternador de tema -->
+            <div class="navbar-actions d-flex align-items-center gap-2">
+                <div class="d-flex align-items-center gap-2 navbar-quick-actions">
                     <a href="/ajuda" class="btn btn-ghost btn-sm text-nowrap" title="Ajuda e Manual" data-bs-toggle="tooltip" data-bs-placement="bottom" aria-label="Ajuda e Manual">
-                        <i class="bi bi-question-circle"></i>
-                        <span class="d-none d-lg-inline ms-1">Ajuda</span>
+                        <i class="bi bi-question-circle" style="color:var(--color-primary);"></i>
+                        <span class="d-none d-lg-inline ms-1" style="color:var(--color-primary);">Ajuda</span>
                     </a>
                     {% if can('movimentacao.criar') %}
-                    <a href="/movements/new" class="btn btn-ghost btn-sm text-nowrap" style="color:#cbd5e1;border-color:rgba(255,255,255,.15);">
+                    <a href="/movements/new" class="btn btn-ghost btn-sm text-nowrap" style="color:var(--color-primary);border-color:var(--color-border);">
                         <i class="bi bi-arrow-repeat"></i> Movimentar
                     </a>
                     {% endif %}
-                    {% if can('patrimonio.criar') %}
-                    <a href="/assets/new" class="btn btn-primary btn-sm text-nowrap">
-                        <i class="bi bi-plus-lg"></i> Novo Bem
-                    </a>
-                    {% endif %}
                 </div>
-            </div>
-
-            {% if current_user %}
-            <!-- User menu -->
-            <div class="dropdown ms-2">
-                <button class="btn btn-ghost btn-sm dropdown-toggle d-flex align-items-center gap-2 text-nowrap" style="color:#cbd5e1;border-color:rgba(255,255,255,.15);" data-bs-toggle="dropdown" aria-expanded="false">
+                {% if current_user %}
+                <!-- User menu -->
+                <div class="dropdown">                    <button class="btn btn-ghost btn-sm dropdown-toggle d-flex align-items-center gap-2 text-nowrap" style="color:var(--color-primary);";border-color:rgba(255,255,255,.15);" data-bs-toggle="dropdown" aria-expanded="false">
                     <i class="bi bi-person-circle"></i>
                     <span class="d-none d-md-inline">{{ current_user.username }}</span>
                 </button>
@@ -251,7 +259,7 @@
                         {% if user_roles %}
                         <div class="mt-1">
                             {% for r in user_roles %}
-                            <span class="badge badge-soft-gray me-1" style="font-size:.65rem;">{{ r }}</span>
+                            <span class="badge badge-soft-gray me-1" style="font-size:.65rem;color:var(--color-text-secondary);">{{ r }}</span>
                             {% endfor %}
                         </div>
                         {% endif %}
@@ -259,12 +267,12 @@
                     <li><hr class="dropdown-divider my-1"></li>
                     <li>
                         <a class="dropdown-item py-2" href="/profile/password">
-                            <i class="bi bi-key me-2"></i>Alterar senha
+                            <i class="bi bi-key me-2" style="color:var(--color-primary);"></i>Alterar senha
                         </a>
                     </li>
                     <li>
                         <form method="post" action="/logout">
-                            <button type="submit" class="dropdown-item py-2 text-danger">
+                            <button type="submit" class="dropdown-item py-2" style="color:var(--color-danger);">
                                 <i class="bi bi-box-arrow-right me-2"></i>Sair
                             </button>
                         </form>
@@ -273,15 +281,17 @@
             </div>
             {% endif %}
 
-            <!-- Dark mode toggle (always visible) -->
-            <button class="dark-toggle ms-2" id="darkToggle" onclick="toggleDarkMode()" title="Alternar modo escuro" aria-label="Alternar tema">
-                <i class="bi bi-moon-stars" id="darkIcon"></i>
-            </button>
+                <!-- Dark mode toggle (always visible) -->
+                <button class="dark-toggle" id="darkToggle" onclick="toggleDarkMode()" title="Alternar modo escuro" aria-label="Alternar tema">
+                    <i class="bi bi-moon-stars" id="darkIcon"></i>
+                </button>
+            </div>
         </div>
     </nav>
 
     <!-- Main Container -->
-    <main class="container-fluid py-4 px-lg-5" style="max-width:1440px;">
+    <main class="container-fluid py-4 px-lg-5 mx-auto" style="max-width:90%;">
+        {% block flash_messages %}{% endblock %}
         {% block content %}{% endblock %}
     </main>
 

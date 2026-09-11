@@ -15,6 +15,7 @@
         })();
     </script>
     <title>Entrar | SisPatrimônio Pro</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}">
     <!-- Google Fonts: Plus Jakarta Sans -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -27,21 +28,26 @@
     <link rel="stylesheet" href="/static/css/style.css?v=20260905">
 </head>
 <body>
-    <div class="d-flex align-items-center justify-content-center" style="min-height:100vh;min-height:100dvh;padding:1.5rem;">
-        <div class="w-100" style="max-width:420px;">
+    <div class="d-flex align-items-center justify-content-center" style="min-height:100vh;min-height:100dvh;padding:1.5rem;background-color: rgb(252, 246, 246);">
+        <div class="w-100" style="max-width:420px;;">
             <!-- Brand -->
             <div class="text-center mb-4">
-                <span class="navbar-brand-icon d-inline-flex" style="width:52px;height:52px;font-size:1.4rem;">
+                <!--<span class="navbar-brand-icon d-inline-flex" style="width:52px;height:52px;font-size:1.4rem;">
                     <i class="bi bi-box-seam"></i>
-                </span>
-                <h4 class="fw-bold mt-3 mb-0" style="letter-spacing:-.02em;">SisPatrimônio <span class="badge bg-indigo-subtle text-primary border border-primary-subtle fw-normal" style="font-size:.65rem;vertical-align:middle;">PRO</span></h4>
-                <p class="text-muted small mt-1 mb-0">Gestão Patrimonial &amp; Fluxo de Movimentação</p>
+                </span>-->
+                <img src="/static/img/Logo IPMjp_.png" alt="" class="navbar-brand-logo" style="width:230px;height:150px;">
+                <h4 class="fw-bold mt-0 text-dark" style="letter-spacing:-.02em;">
+                    
+                    SisPatrimônio 
+                    <span class="badge bg-danger-subtle text-danger border border-danger-subtle fw-normal" style="font-size:.65rem;vertical-align:middle;">PRO</span>
+                </h4>
+                <p class="text-secondary small mt-1 mb-0">Gestão Patrimonial &amp; Fluxo de Movimentação</p>
             </div>
 
             <!-- Login Card -->
-            <div class="card shadow-sm border-0" style="border-radius:14px;background:var(--c-surface);">
+            <div class="card shadow-sm border border-2 border-secondary-subtle" style="border-radius:14px;background:var(--c-surface);">
                 <div class="card-body p-4 p-md-5">
-                    <h5 class="fw-bold mb-1" style="font-size:1.05rem;">Acesse o sistema</h5>
+                    <h5 class="fw-bold mb-1" style="font-size:1.06rem;">Acesse o sistema</h5>
                     <p class="text-muted small mb-4">Entre com suas credenciais para continuar.</p>
 
                     {% if error %}
@@ -65,12 +71,22 @@
                             <div class="input-group">
                                 <span class="input-group-text bg-white border-end-0 text-muted"><i class="bi bi-lock"></i></span>
                                 <input type="password" id="password" name="password" class="form-control border-start-0" placeholder="Sua senha" required autocomplete="current-password">
+                                <button class="btn btn-outline-secondary" type="button" id="togglePassword" onclick="togglePasswordVisibility()">
+                                    <i class="bi bi-eye-slash" id="toggleIcon"></i>
+                                </button>
                             </div>
+                            
                         </div>
                         <button type="submit" class="btn btn-primary w-100 fw-bold py-2">
                             <i class="bi bi-box-arrow-in-right me-1"></i> Entrar
                         </button>
                     </form>
+
+                    <div class="text-center mt-3">
+                        <a href="/setup" class="text-decoration-none text-primary small fw-semibold">
+                            <i class="bi bi-person-plus me-1"></i> Primeiro acesso
+                        </a>
+                    </div>
                 </div>
             </div>
 

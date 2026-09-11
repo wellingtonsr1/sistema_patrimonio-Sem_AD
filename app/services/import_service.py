@@ -4,7 +4,7 @@ Serviço de importação em massa de equipamentos via CSV.
 Colunas esperadas (mínimo: tombamento, equipamento, categoria):
   - tombamento   (obrigatório) → tag
   - equipamento  (obrigatório) → name
-  - categoria    (obrigatório) → category (AssetCategory enum value)
+  - categoria    (obrigatório) → category (nome amigável, valor técnico ou rótulo)
   - marca        (opcional)    → brand
   - modelo       (opcional)    → model
   - serie        (opcional)    → serial_number
@@ -12,7 +12,7 @@ Colunas esperadas (mínimo: tombamento, equipamento, categoria):
   - fornecedor   (opcional)    → supplier
   - valor        (opcional)    → purchase_value
   - data_aquisicao (opcional)  → purchase_date (DD/MM/AAAA ou AAAA-MM-DD)
-  - condicao     (opcional)    → condition (AssetCondition enum value)
+  - condicao     (opcional)    → condition (valor técnico ou rótulo)
   - notas        (opcional)    → notes
 
 O CSV pode conter colunas adicionais — elas são ignoradas.
@@ -21,6 +21,7 @@ A separação pode ser ; (padrão BR) ou , — detectado automaticamente.
 
 import csv
 import io
+import unicodedata
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 from sqlalchemy.orm import Session
@@ -30,6 +31,7 @@ from app.models.asset import Asset
 from app.models.movement import Movement
 from app.models.enums import MovementType
 from app.schemas.asset import AssetCreate
+from app.services.location_service import LocationService
 
 
 # Mapeamento de nomes amigáveis → valores do enum AssetCategory
@@ -132,8 +134,20 @@ def _parse_float(value: str) -> float:
         return 0.0
 
 
+def _fold(text: str) -> str:
+    """Minúsculas e sem acentos, para comparar textos livres com rótulos."""
+    folded = unicodedata.normalize("NFKD", (text or "").strip().lower())
+    return "".join(ch for ch in folded if not unicodedata.combining(ch))
+
+
 def _normalize_category(raw: str) -> AssetCategory:
-    """Converte texto livre para o enum AssetCategory."""
+    """Converte texto livre para o enum AssetCategory.
+
+    Aceita o nome amigável ("notebook"), o valor técnico
+    ("REDE_E_CONECTIVIDADE") e o rótulo exibido na interface
+    ("Rede e Conectividade"), garantindo que um CSV exportado pelo próprio
+    sistema possa ser reimportado sem ajustes manuais.
+    """
     key = raw.strip().lower()
     if key in CATEGORY_MAP:
         return CATEGORY_MAP[key]
@@ -141,20 +155,22 @@ def _normalize_category(raw: str) -> AssetCategory:
     for k, v in CATEGORY_MAP.items():
         if k in key or key in k:
             return v
-    # Tenta pelo valor direto do enum
+    # Tenta pelo valor técnico ou pelo rótulo de interface do enum
+    folded_key = _fold(raw)
     for cat in AssetCategory:
-        if cat.value.lower() == key:
+        if folded_key in (_fold(cat.value), _fold(cat.label)):
             return cat
     return AssetCategory.OTHER
 
 
 def _normalize_condition(raw: str) -> AssetCondition:
-    """Converte texto livre para o enum AssetCondition."""
+    """Converte texto livre para o enum AssetCondition (valor técnico ou rótulo)."""
     key = raw.strip().lower()
     if key in CONDITION_MAP:
         return CONDITION_MAP[key]
+    folded_key = _fold(raw)
     for cond in AssetCondition:
-        if cond.value.lower() == key:
+        if folded_key in (_fold(cond.value), _fold(cond.label)):
             return cond
     return AssetCondition.NEW
 
@@ -172,6 +188,10 @@ def _validate_row(row: Dict[str, str], row_num: int) -> List[str]:
 
 
 # Mapeamento de nomes alternativos de colunas → nome canônico
+# nota: para localização, o parser não confia no alias porque a
+# normalização do nome da coluna deve preservar o valor exato (incluindo
+# acentuação) para a resolução via LocationService. O alias abaixo é
+# meramente indicativo.
 COLUMN_ALIASES = {
     # tombamento
     "tombamento": "tombamento",
@@ -258,6 +278,14 @@ COLUMN_ALIASES = {
     "notes": "notas",
     "observacao": "notas",
     "observação": "notas",
+    # localização
+    # localização (ordem preferida: nomes mais usados em primeiro)
+    "localizacao": "localizacao",
+    "localização": "localizacao",
+    "localization": "localizacao",
+    "location": "localizacao",
+    "local": "localizacao",
+    "locations": "localizacao",
 }
 
 
@@ -373,6 +401,28 @@ def execute_import(
             purchase_date = _parse_date(row.get("data_aquisicao", ""))
             condition = _normalize_condition(row.get("condicao", ""))
             notes = row.get("notas", "").strip() or None
+            
+            # Resolver localização via coluna localização (alias)
+            location = None
+            location_name = None
+            location_id = None
+            loc_raw = (
+                row.get("localizacao")
+                or row.get("localization")
+                or ""
+            )
+            loc_raw = loc_raw.strip()
+            if loc_raw:
+                location_name = loc_raw
+                location = LocationService.get_by_name(db, loc_raw)
+                if location:
+                    location_name = location.name
+                    location_id = location.id
+                else:
+                    errors.append(
+                        f"Linha {i}: local '{loc_raw}' não encontrado no cadastro de locais"
+                    )
+                    continue
 
             # Verificar duplicata
             existing = db.query(Asset).filter(Asset.tag == tag).first()
@@ -414,6 +464,21 @@ def execute_import(
                 imported += 1
                 continue
 
+            # Verificar duplicata de serial_number antes de criar
+            if serial_number:
+                serial_existing = db.query(Asset).filter(
+                    Asset.serial_number == serial_number
+                ).first()
+                if serial_existing and skip_duplicates:
+                    skipped += 1
+                    continue
+                if serial_existing and not skip_duplicates:
+                    errors.append(
+                        f"Linha {i}: número de série '{serial_number}' já cadastrado para o tombamento "
+                        f"'{serial_existing.tag}'"
+                    )
+                    continue
+
             # Criar novo asset
             asset = Asset(
                 tag=tag,
@@ -429,6 +494,7 @@ def execute_import(
                 condition=condition,
                 status=AssetStatus.AVAILABLE,
                 notes=notes,
+                location_id=location_id,
             )
             db.add(asset)
             db.flush()
@@ -440,9 +506,9 @@ def execute_import(
                 timestamp=datetime.now(),
                 origin_location_name="Importação CSV",
                 origin_custodian_name="Sistema",
-                destination_location_name="Estoque Central",
+                destination_location_name=location_name or "Estoque Central",
                 destination_custodian_name=None,
-                previous_status=None,
+                previous_status=asset.status,
                 new_status=AssetStatus.AVAILABLE,
                 previous_condition=None,
                 new_condition=condition,
@@ -458,11 +524,13 @@ def execute_import(
             errors.append(f"Linha {i}: {str(e)}")
             continue
 
-    if not errors:
+    try:
         db.commit()
-    else:
-        # Se houve erros parciais, faz commit do que foi processado corretamente
-        db.commit()
+    except Exception:
+        db.rollback()
+        # Se o commit falhou, retornar o que foi processado até o momento
+        # e incluir o erro na lista
+        errors.append("Erro ao salvar os dados no banco.")
 
     return {
         "imported": imported,
